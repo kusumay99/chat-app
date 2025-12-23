@@ -85,7 +85,7 @@ router.post(
 /* ======================================================
    GET PROFILE BY EMAIL  ✅ WORKING
 ====================================================== */
-router.post(
+router.get(
   '/profile/by-email',
   auth,
   body('email').isEmail(),
@@ -112,31 +112,47 @@ router.post(
 );
 
 /* ======================================================
-   GET PROFILE BY PROFILE ID
+   GET PROFILE BY PROFILE ID (BODY ONLY)
 ====================================================== */
-router.post(
-  '/profile/by-profile-id',
-  auth,
-  body('profileId').notEmpty(),
+
+/* ======================================================
+   GET PROFILE BY PROFILE ID (BODY ONLY)
+====================================================== */
+router.get(
+  '/profile/by-profileId',
+  [
+    body('profileId')
+      .notEmpty()
+      .isNumeric()
+      .withMessage('profileId is required and must be numeric')
+  ],
   async (req, res) => {
     try {
       const errors = validationResult(req);
-      if (!errors.isEmpty())
+      if (!errors.isEmpty()) {
         return res.status(400).json({ errors: errors.array() });
+      }
 
-      const user = await User.findOne({
-        profileId: req.body.profileId,
-      }).select(
+      const profileId = Number(req.body.profileId);
+
+      const user = await User.findOne({ profileId }).select(
         'profileId username email avatar gender dateOfBirth address onlineStatus lastSeen'
       );
 
-      if (!user)
-        return res.status(404).json({ message: 'Profile not found' });
+      if (!user) {
+        return res.status(404).json({
+          message: 'Profile not found'
+        });
+      }
 
-      res.json({ profile: user });
+      res.json({
+        profile: user
+      });
     } catch (err) {
-      console.error(err);
-      res.status(500).json({ message: 'Server error' });
+      console.error('Get profile by profileId error:', err);
+      res.status(500).json({
+        message: 'Server error'
+      });
     }
   }
 );
