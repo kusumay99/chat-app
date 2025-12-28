@@ -1,54 +1,47 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
-module.exports = async function auth(req, res, next) {
+module.exports = async (req, res, next) => {
   try {
-    const authHeader = req.header('Authorization');
+    // 1️⃣ Get Authorization header
+    const authHeader = req.headers.authorization;
 
-    if (!authHeader) {
-      return res
-        .status(401)
-        .json({ message: 'No token, authorization denied' });
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authorization token missing'
+      });
     }
 
-    if (!authHeader.startsWith('Bearer ')) {
-      return res
-        .status(401)
-        .json({ message: 'Invalid token format' });
-    }
+    // 2️⃣ Extract token
+    const token = authHeader.split(' ')[1];
 
-    const token = authHeader.replace('Bearer ', '').trim();
-
+    // 3️⃣ Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    // ✅ SUPPORT MULTIPLE TOKEN SHAPES
-    const userId =
-      decoded.userId ||
-      decoded.id ||
-      decoded._id ||
-      decoded.user?.id ||
-      decoded.user?._id;
-
-    if (!userId) {
-      return res
-        .status(401)
-        .json({ message: 'Invalid token payload' });
-    }
-
-    const user = await User.findById(userId).select(
-      '-password -refreshToken'
-    );
+    // 4️⃣ Find user
+    const user = await User.findById(decoded.userId)
+      .select('-password -refreshToken');
 
     if (!user) {
-      return res
-        .status(401)
-        .json({ message: 'User not found for this token' });
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token user'
+      });
     }
 
-    req.user = user; // ✅ FULL USER DOC
+    // 5️⃣ Attach user info to request
+    req.user = {
+      userId: user._id,
+      profileId: user.profileId, // 👈 profileId INCLUDED
+      email: user.email
+    };
+
     next();
-  } catch (err) {
-    console.error('❌ Auth error:', err.message);
-    return res.status(401).json({ message: 'Token is not valid' });
+  } catch (error) {
+    return res.status(401).json({
+      success: false,
+      message: 'Token is invalid or expired'
+    });
   }
 };

@@ -1,5 +1,6 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
 const auth = require('../middleware/auth');
@@ -7,35 +8,60 @@ const auth = require('../middleware/auth');
 const router = express.Router();
 
 /* ===============================
-   JWT TOKEN GENERATOR
+   ERROR HELPERS
 ================================ */
-const generateTokens = (userId) => {
-  const accessToken = jwt.sign(
-    { userId },
-    process.env.JWT_SECRET,
-    { expiresIn: '15m' }
-  );
+const validationError = (res, errors) =>
+  res.status(400).json({ success: false, message: 'Validation failed', errors });
 
-  const refreshToken = jwt.sign(
-    { userId },
-    process.env.JWT_REFRESH_SECRET,
-    { expiresIn: '7d' }
-  );
+const authError = (res, message = 'Unauthorized') =>
+  res.status(401).json({ success: false, message });
 
-  return { accessToken, refreshToken };
+const serverError = (res, message = 'Internal server error') =>
+  res.status(500).json({ success: false, message });
+
+/* ===============================
+   TOKEN GENERATOR
+================================ */
+const generateTokens = (userId) => ({
+  accessToken: jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: '15m' }),
+  refreshToken: jwt.sign({ userId }, process.env.JWT_REFRESH_SECRET, { expiresIn: '7d' })
+});
+
+/* ===============================
+   AUTO GENERATE UNIQUE PROFILE ID
+================================ */
+const generateProfileId = async () => {
+  let profileId;
+  let exists = true;
+
+  while (exists) {
+    profileId = Math.floor(100 + Math.random() * 900); // 3-digit
+    exists = await User.findOne({ profileId });
+  }
+
+  return profileId;
 };
 
 /* ===============================
-   REGISTER (NORMAL + EXTERNAL)
+   REGISTER (DUPLICATE USERNAMES ALLOWED)
 ================================ */
 router.post(
   '/register',
   [
-    body('username').isLength({ min: 3, max: 30 }).trim(),
-    body('email').isEmail().normalizeEmail(),
+    body('username')
+      .trim()
+      .isLength({ min: 3 })
+      .withMessage('Username must be at least 3 characters'),
+
+    body('email')
+      .trim()
+      .isEmail()
+      .withMessage('Valid email is required'),
+
     body('password')
-      .optional()
-      .isLength({ min: 6 }),
+      .isLength({ min: 6 })
+      .withMessage('Password must be at least 6 characters'),
+
     body('profileId')
       .optional()
       .isNumeric()
@@ -44,114 +70,172 @@ router.post(
   async (req, res) => {
     try {
       const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
-      }
+      if (!errors.isEmpty()) return validationError(res, errors.array());
 
       const { username, email, password, profileId } = req.body;
+      const normalizedEmail = email.toLowerCase();
 
-      /* ===============================
-         CHECK EXISTING USER
-      =============================== */
-      let existingUser;
+      // ✅ EMAIL must be unique
+      const emailExists = await User.findOne({ email: normalizedEmail });
+      if (emailExists) {
+        return res.status(409).json({
+          success: false,
+          message: 'Email already exists'
+        });
+      }
 
-      if (profileId) {
-        existingUser = await User.findOne({ profileId });
+      // ✅ ProfileId must be unique
+      let finalProfileId = profileId;
+      if (!finalProfileId) {
+        finalProfileId = await generateProfileId();
       } else {
-        existingUser = await User.findOne({ email });
+        const profileExists = await User.findOne({ profileId: finalProfileId });
+        if (profileExists) {
+          return res.status(409).json({
+            success: false,
+            message: 'profileId already in use'
+          });
+        }
       }
 
-      if (existingUser) {
-        const tokens = generateTokens(existingUser._id);
-        existingUser.refreshToken = tokens.refreshToken;
-        existingUser.onlineStatus = 'online';
-        await existingUser.save();
+      // 🔐 Hash password
+      const hashedPassword = await bcrypt.hash(password, 10);
 
-        return res.json({
-          message: 'User already exists',
-          user: existingUser.toJSON(),
-          ...tokens
-        });
-      }
-
-      /* ===============================
-         VALIDATE PASSWORD
-      =============================== */
-      if (!profileId && !password) {
-        return res.status(400).json({
-          message: 'Password is required for normal registration'
-        });
-      }
-
-      /* ===============================
-         CREATE USER
-      =============================== */
-      const user = new User({
+      // ✅ Username DUPLICATES ARE ALLOWED
+      const user = await User.create({
         username,
-        email,
-        password: profileId ? undefined : password,
-        profileId: profileId || null
+        email: normalizedEmail,
+        password: hashedPassword,
+        profileId: finalProfileId
       });
-
-      await user.save();
 
       const tokens = generateTokens(user._id);
       user.refreshToken = tokens.refreshToken;
       await user.save();
 
       res.status(201).json({
-        message: 'User registered successfully',
-        user: user.toJSON(),
+        success: true,
+        message: 'Registration successful',
+        user: {
+          id: user._id,
+          username: user.username,
+          email: user.email,
+          profileId: user.profileId,
+          avatar: user.avatar,
+          gender: user.gender,
+          onlineStatus: user.onlineStatus
+        },
         ...tokens
       });
     } catch (err) {
-      console.error('Register error:', err);
-      res.status(500).json({ message: 'Server error during registration' });
+      console.error('REGISTER ERROR:', err);
+      serverError(res, 'Failed to register user');
     }
   }
 );
 
 /* ===============================
-   LOGIN (NORMAL USERS ONLY)
+   LOGIN
 ================================ */
 router.post(
   '/login',
   [
-    body('email').isEmail().normalizeEmail(),
-    body('password').exists()
+    body('email').trim().isEmail().withMessage('Valid email is required'),
+    body('password').notEmpty().withMessage('Password is required')
   ],
   async (req, res) => {
     try {
       const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
-      }
+      if (!errors.isEmpty()) return validationError(res, errors.array());
 
       const { email, password } = req.body;
+      const normalizedEmail = email.toLowerCase();
 
-      const user = await User.findOne({ email });
-      if (!user || user.profileId) {
-        return res.status(400).json({ message: 'Invalid credentials' });
-      }
+      const user = await User.findOne({ email: normalizedEmail });
+      if (!user) return authError(res, 'Invalid email or password');
 
-      const isMatch = await user.comparePassword(password);
-      if (!isMatch) {
-        return res.status(400).json({ message: 'Invalid credentials' });
+      const isMatch = await bcrypt.compare(password, user.password);
+      if (!isMatch) return authError(res, 'Invalid email or password');
+
+      if (!user.profileId) {
+        user.profileId = await generateProfileId();
       }
 
       const tokens = generateTokens(user._id);
       user.refreshToken = tokens.refreshToken;
       user.onlineStatus = 'online';
+      user.lastSeen = new Date();
       await user.save();
 
       res.json({
+        success: true,
         message: 'Login successful',
-        user: user.toJSON(),
+        user: {
+          id: user._id,
+          username: user.username,
+          email: user.email,
+          profileId: user.profileId,
+          avatar: user.avatar,
+          gender: user.gender,
+          onlineStatus: user.onlineStatus
+        },
         ...tokens
       });
     } catch (err) {
-      console.error('Login error:', err);
-      res.status(500).json({ message: 'Server error during login' });
+      console.error('LOGIN ERROR:', err);
+      serverError(res, 'Login failed');
+    }
+  }
+);
+
+/* ===============================
+   CURRENT USER
+================================ */
+router.get('/me', auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId).select('-password -refreshToken');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    res.json({ success: true, user });
+  } catch (err) {
+    console.error('ME ERROR:', err);
+    serverError(res, 'Unable to fetch user');
+  }
+});
+
+/* ===============================
+   REFRESH TOKEN
+================================ */
+router.post(
+  '/refresh',
+  [body('refreshToken').notEmpty().withMessage('Refresh token required')],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) return validationError(res, errors.array());
+
+      const { refreshToken } = req.body;
+      let decoded;
+
+      try {
+        decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+      } catch {
+        return authError(res, 'Invalid refresh token');
+      }
+
+      const user = await User.findById(decoded.userId);
+      if (!user || user.refreshToken !== refreshToken) {
+        return authError(res, 'Invalid refresh token');
+      }
+
+      const tokens = generateTokens(user._id);
+      user.refreshToken = tokens.refreshToken;
+      await user.save();
+
+      res.json({ success: true, ...tokens });
+    } catch (err) {
+      console.error('REFRESH ERROR:', err);
+      serverError(res, 'Token refresh failed');
     }
   }
 );
@@ -161,102 +245,41 @@ router.post(
 ================================ */
 router.post('/logout', auth, async (req, res) => {
   try {
-    const user = await User.findById(req.user._id);
+    const user = await User.findById(req.user.userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
     user.refreshToken = null;
     user.onlineStatus = 'offline';
     user.lastSeen = new Date();
     await user.save();
 
-    res.json({ message: 'Logout successful' });
+    res.json({ success: true, message: 'Logout successful' });
   } catch (err) {
-    res.status(500).json({ message: 'Server error during logout' });
+    console.error('LOGOUT ERROR:', err);
+    serverError(res, 'Logout failed');
   }
 });
 
 /* ===============================
-   CURRENT USER
+   DELETE BY PROFILE ID
 ================================ */
-router.get('/me', auth, (req, res) => {
-  res.json({ user: req.user });
-});
-// Refresh token
-router.post('/refresh', async (req, res) => {
-  try {
-    const { refreshToken } = req.body;
-
-    if (!refreshToken) {
-      return res.status(401).json({ message: 'Refresh token required' });
-    }
-
-    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-    const user = await User.findById(decoded.userId);
-
-    if (!user || user.refreshToken !== refreshToken) {
-      return res.status(401).json({ message: 'Invalid refresh token' });
-    }
-
-    // Generate new tokens
-    const tokens = generateTokens(user._id);
-    
-    // Update refresh token
-    user.refreshToken = tokens.refreshToken;
-    await user.save();
-
-    res.json(tokens);
-  } catch (error) {
-    res.status(401).json({ message: 'Invalid refresh token' });
-  }
-});
-
-
-// ===============================
-// PUBLIC DELETE USER BY PROFILE ID
-// ===============================
 router.delete(
   '/delete-by-profileId',
-  [
-    body('profileId')
-      .notEmpty()
-      .isNumeric()
-      .withMessage('profileId is required and must be numeric')
-  ],
+  [body('profileId').isNumeric().withMessage('profileId must be numeric')],
   async (req, res) => {
     try {
       const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
-      }
+      if (!errors.isEmpty()) return validationError(res, errors.array());
 
-      const profileId = Number(req.body.profileId);
+      const user = await User.findOneAndDelete({ profileId: req.body.profileId });
+      if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-      /* ===============================
-         FIND USER
-      =============================== */
-      const user = await User.findOne({ profileId });
-
-      if (!user) {
-        return res.status(404).json({
-          message: 'User not found'
-        });
-      }
-
-      /* ===============================
-         DELETE USER
-      =============================== */
-      await User.deleteOne({ profileId });
-
-      res.json({
-        message: 'User deleted successfully',
-        deletedProfileId: profileId
-      });
+      res.json({ success: true, message: 'User deleted successfully' });
     } catch (err) {
-      console.error('Public delete by profileId error:', err);
-      res.status(500).json({
-        message: 'Server error'
-      });
+      console.error('DELETE ERROR:', err);
+      serverError(res, 'User deletion failed');
     }
   }
 );
-
 
 module.exports = router;

@@ -114,10 +114,6 @@ router.get(
 /* ======================================================
    GET PROFILE BY PROFILE ID (BODY ONLY)
 ====================================================== */
-
-/* ======================================================
-   GET PROFILE BY PROFILE ID (BODY ONLY)
-====================================================== */
 router.get(
   '/profile/by-profileId',
   [
@@ -228,4 +224,7 @@ router.put('/status', auth, body('status').isIn(['online', 'offline', 'away']), 
   }
 });
 
+router.post('/dummy', ()=>{
+  consol.log('iammad')
+})
 module.exports = router;
