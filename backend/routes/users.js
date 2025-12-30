@@ -85,7 +85,7 @@ router.post(
 /* ======================================================
    GET PROFILE BY EMAIL  ✅ WORKING
 ====================================================== */
-router.get(
+router.post(
   '/profile/by-email',
   auth,
   body('email').isEmail(),
@@ -114,7 +114,7 @@ router.get(
 /* ======================================================
    GET PROFILE BY PROFILE ID (BODY ONLY)
 ====================================================== */
-router.get(
+router.post(
   '/profile/by-profileId',
   [
     body('profileId')
