@@ -1,82 +1,106 @@
 const express = require('express');
 const http = require('http');
-const { Server } = require('socket.io');
+const path = require('path');
 const cors = require('cors');
+const { Server } = require('socket.io');
 require('dotenv').config();
 
+// DB
 const { connectDB, checkDBHealth, getDBStats } = require('./config/db');
+
+// Routes
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
 const messageRoutes = require('./routes/messages');
 const postRoutes = require('./routes/posts');
+
+// Socket
 const socketHandler = require('./socket/socketHandler');
 
 const app = express();
 const server = http.createServer(app);
 
-// 🌍 CORS + Socket.IO setup for ANY frontend IP (mobile/web/expo)
-app.use(
-  cors({
-    origin: '*', // allow all origins for development
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-    credentials: false,
-  })
-);
-
-const io = new Server(server, {
-  cors: {
-    origin: '*', // allow any origin to connect
-    methods: ['GET', 'POST'],
-  },
-});
-
+/* ======================================================
+   MIDDLEWARE
+====================================================== */
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// API Routes
+app.use(
+  cors({
+    origin: '*', // allow all origins (dev only)
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+    credentials: false
+  })
+);
+
+// Static files
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+/* ======================================================
+   SOCKET.IO
+====================================================== */
+const io = new Server(server, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST']
+  }
+});
+
+// Socket handler
+socketHandler(io);
+
+/* ======================================================
+   API ROUTES
+====================================================== */
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/posts', postRoutes);
-app.use('/uploads', express.static('uploads'));
 
-
-// Socket.IO handler
-socketHandler(io);
-
-// Health check endpoint
+/* ======================================================
+   HEALTH & DB STATS
+====================================================== */
 app.get('/api/health', async (req, res) => {
   const dbHealthy = await checkDBHealth();
   res.json({
     status: 'OK',
     message: 'Chat App Backend is running',
     database: dbHealthy ? 'Connected' : 'Disconnected',
-    timestamp: new Date().toISOString(),
+    timestamp: new Date().toISOString()
   });
 });
 
-// Database statistics endpoint
 app.get('/api/db-stats', async (req, res) => {
   const stats = await getDBStats();
   if (stats) {
     res.json({ success: true, stats });
   } else {
-    res.status(500).json({ success: false, message: 'Failed to get database statistics' });
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get database statistics'
+    });
   }
 });
 
+/* ======================================================
+   START SERVER
+====================================================== */
 const PORT = process.env.PORT || 5000;
 
-// ✅ Start server on all interfaces (0.0.0.0) so other devices can reach it
 const startServer = async () => {
-  await connectDB();
+  try {
+    await connectDB();
 
-  server.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
-    console.log(`🌐 Accessible via LAN IP (e.g., http://192.168.x.x:${PORT})`);
-    console.log(`📱 Mobile & Web can connect using your machine's IP`);
-    console.log(`🔧 API Health: http://<your-ip>:${PORT}/api/health`);
-  });
+    server.listen(PORT, '0.0.0.0', () => {
+      console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
+      console.log(`🌐 LAN Access: http://<your-ip>:${PORT}`);
+      console.log(`🔧 Health: http://<your-ip>:${PORT}/api/health`);
+    });
+  } catch (err) {
+    console.error('❌ Failed to start server:', err);
+    process.exit(1);
+  }
 };
 
 startServer();

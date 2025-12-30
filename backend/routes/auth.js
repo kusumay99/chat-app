@@ -11,13 +11,33 @@ const router = express.Router();
    ERROR HELPERS
 ================================ */
 const validationError = (res, errors) =>
-  res.status(400).json({ success: false, message: 'Validation failed', errors });
+  res.status(400).json({
+    success: false,
+    error: 'VALIDATION_ERROR',
+    errors
+  });
 
 const authError = (res, message = 'Unauthorized') =>
-  res.status(401).json({ success: false, message });
+  res.status(401).json({
+    success: false,
+    error: 'AUTH_ERROR',
+    message
+  });
 
-const serverError = (res, message = 'Internal server error') =>
-  res.status(500).json({ success: false, message });
+const conflictError = (res, message) =>
+  res.status(409).json({
+    success: false,
+    error: 'CONFLICT_ERROR',
+    message
+  });
+
+const serverError = (res, err, defaultMsg = 'Internal server error') =>
+  res.status(500).json({
+    success: false,
+    error: 'SERVER_ERROR',
+    message: err.message || defaultMsg,
+    stack: err.stack // remove in production
+  });
 
 /* ===============================
    TOKEN GENERATOR
@@ -28,22 +48,7 @@ const generateTokens = (userId) => ({
 });
 
 /* ===============================
-   AUTO GENERATE UNIQUE PROFILE ID
-================================ */
-const generateProfileId = async () => {
-  let profileId;
-  let exists = true;
-
-  while (exists) {
-    profileId = Math.floor(100 + Math.random() * 900); // 3-digit
-    exists = await User.findOne({ profileId });
-  }
-
-  return profileId;
-};
-
-/* ===============================
-   REGISTER (DUPLICATE USERNAMES ALLOWED)
+   REGISTER
 ================================ */
 router.post(
   '/register',
@@ -75,38 +80,17 @@ router.post(
       const { username, email, password, profileId } = req.body;
       const normalizedEmail = email.toLowerCase();
 
-      // ✅ EMAIL must be unique
       const emailExists = await User.findOne({ email: normalizedEmail });
-      if (emailExists) {
-        return res.status(409).json({
-          success: false,
-          message: 'Email already exists'
-        });
-      }
+      if (emailExists) return conflictError(res, 'Email already exists');
 
-      // ✅ ProfileId must be unique
-      let finalProfileId = profileId;
-      if (!finalProfileId) {
-        finalProfileId = await generateProfileId();
-      } else {
-        const profileExists = await User.findOne({ profileId: finalProfileId });
-        if (profileExists) {
-          return res.status(409).json({
-            success: false,
-            message: 'profileId already in use'
-          });
-        }
-      }
-
-      // 🔐 Hash password
       const hashedPassword = await bcrypt.hash(password, 10);
+      const profileIdNumber = profileId ? Number(profileId) : null;
 
-      // ✅ Username DUPLICATES ARE ALLOWED
       const user = await User.create({
         username,
         email: normalizedEmail,
         password: hashedPassword,
-        profileId: finalProfileId
+        profileId: profileIdNumber
       });
 
       const tokens = generateTokens(user._id);
@@ -120,16 +104,17 @@ router.post(
           id: user._id,
           username: user.username,
           email: user.email,
-          profileId: user.profileId,
+          profileId: user.profileId ?? undefined,
           avatar: user.avatar,
           gender: user.gender,
           onlineStatus: user.onlineStatus
         },
-        ...tokens
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken
       });
     } catch (err) {
-      console.error('REGISTER ERROR:', err);
-      serverError(res, 'Failed to register user');
+      console.error('REGISTER ERROR DETAILS:', err);
+      serverError(res, err, 'Registration failed');
     }
   }
 );
@@ -140,8 +125,14 @@ router.post(
 router.post(
   '/login',
   [
-    body('email').trim().isEmail().withMessage('Valid email is required'),
-    body('password').notEmpty().withMessage('Password is required')
+    body('email')
+      .trim()
+      .isEmail()
+      .withMessage('Valid email is required'),
+
+    body('password')
+      .notEmpty()
+      .withMessage('Password is required')
   ],
   async (req, res) => {
     try {
@@ -154,12 +145,8 @@ router.post(
       const user = await User.findOne({ email: normalizedEmail });
       if (!user) return authError(res, 'Invalid email or password');
 
-      const isMatch = await bcrypt.compare(password, user.password);
+      const isMatch = bcrypt.compare(password, user.password);
       if (!isMatch) return authError(res, 'Invalid email or password');
-
-      if (!user.profileId) {
-        user.profileId = await generateProfileId();
-      }
 
       const tokens = generateTokens(user._id);
       user.refreshToken = tokens.refreshToken;
@@ -174,16 +161,17 @@ router.post(
           id: user._id,
           username: user.username,
           email: user.email,
-          profileId: user.profileId,
+          profileId: user.profileId || undefined,
           avatar: user.avatar,
           gender: user.gender,
           onlineStatus: user.onlineStatus
         },
-        ...tokens
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken
       });
     } catch (err) {
-      console.error('LOGIN ERROR:', err);
-      serverError(res, 'Login failed');
+      console.error('LOGIN ERROR DETAILS:', err);
+      serverError(res, err, 'Login failed');
     }
   }
 );
@@ -198,47 +186,10 @@ router.get('/me', auth, async (req, res) => {
 
     res.json({ success: true, user });
   } catch (err) {
-    console.error('ME ERROR:', err);
-    serverError(res, 'Unable to fetch user');
+    console.error('ME ERROR DETAILS:', err);
+    serverError(res, err, 'Unable to fetch user');
   }
 });
-
-/* ===============================
-   REFRESH TOKEN
-================================ */
-router.post(
-  '/refresh',
-  [body('refreshToken').notEmpty().withMessage('Refresh token required')],
-  async (req, res) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) return validationError(res, errors.array());
-
-      const { refreshToken } = req.body;
-      let decoded;
-
-      try {
-        decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-      } catch {
-        return authError(res, 'Invalid refresh token');
-      }
-
-      const user = await User.findById(decoded.userId);
-      if (!user || user.refreshToken !== refreshToken) {
-        return authError(res, 'Invalid refresh token');
-      }
-
-      const tokens = generateTokens(user._id);
-      user.refreshToken = tokens.refreshToken;
-      await user.save();
-
-      res.json({ success: true, ...tokens });
-    } catch (err) {
-      console.error('REFRESH ERROR:', err);
-      serverError(res, 'Token refresh failed');
-    }
-  }
-);
 
 /* ===============================
    LOGOUT
@@ -255,8 +206,8 @@ router.post('/logout', auth, async (req, res) => {
 
     res.json({ success: true, message: 'Logout successful' });
   } catch (err) {
-    console.error('LOGOUT ERROR:', err);
-    serverError(res, 'Logout failed');
+    console.error('LOGOUT ERROR DETAILS:', err);
+    serverError(res, err, 'Logout failed');
   }
 });
 

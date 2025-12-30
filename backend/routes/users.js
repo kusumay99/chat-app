@@ -157,32 +157,49 @@ router.get(
    UPDATE PROFILE
 ====================================================== */
 router.put(
-  '/profile',
+  "/profile",
   auth,
   [
-    body('username').optional().isLength({ min: 3 }),
-    body('gender').optional(),
-    body('dateOfBirth').optional().isISO8601(),
-    body('address').optional(),
+    body("username").optional().isLength({ min: 3 }),
+    body("gender").optional().isString(),
+    body("dateOfBirth").optional().isISO8601(),
+    body("address").optional().isString()
   ],
   async (req, res) => {
     try {
       const errors = validationResult(req);
-      if (!errors.isEmpty())
+      if (!errors.isEmpty()) {
         return res.status(400).json({ errors: errors.array() });
+      }
 
-      const user = await User.findById(req.user._id);
+      // ✅ Correct way to get user
+      const user = await User.findById(req.user.id);
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
 
-      Object.assign(user, req.body);
+      // ✅ Allow only specific fields
+      const { username, gender, dateOfBirth, address } = req.body;
+
+      if (username) user.username = username;
+      if (gender) user.gender = gender;
+      if (dateOfBirth) user.dateOfBirth = dateOfBirth;
+      if (address) user.address = address;
+
       await user.save();
 
-      res.json({ message: 'Profile updated', user });
+      res.json({
+        success: true,
+        message: "Profile updated successfully",
+        user
+      });
     } catch (err) {
       console.error(err);
-      res.status(500).json({ message: 'Server error' });
+      res.status(500).json({ message: "Server error" });
     }
   }
 );
+
 
 /* ======================================================
    UPLOAD AVATAR
