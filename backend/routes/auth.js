@@ -179,16 +179,9 @@ router.post(
 /* ===============================
    CURRENT USER
 ================================ */
+// Get current user
 router.get('/me', auth, async (req, res) => {
-  try {
-    const user = await User.findById(req.user.userId).select('-password -refreshToken');
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-
-    res.json({ success: true, user });
-  } catch (err) {
-    console.error('ME ERROR DETAILS:', err);
-    serverError(res, err, 'Unable to fetch user');
-  }
+  res.json({ user: req.user });
 });
 
 /* ===============================
