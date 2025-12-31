@@ -189,18 +189,15 @@ router.get('/me', auth, async (req, res) => {
 ================================ */
 router.post('/logout', auth, async (req, res) => {
   try {
-    const user = await User.findById(req.user.userId);
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-
+    const user = await User.findById(req.user._id);
     user.refreshToken = null;
     user.onlineStatus = 'offline';
     user.lastSeen = new Date();
     await user.save();
 
-    res.json({ success: true, message: 'Logout successful' });
-  } catch (err) {
-    console.error('LOGOUT ERROR DETAILS:', err);
-    serverError(res, err, 'Logout failed');
+    res.json({ message: 'Logout successful' });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error during logout' });
   }
 });
 
