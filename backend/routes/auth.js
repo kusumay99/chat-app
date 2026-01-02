@@ -177,6 +177,39 @@ router.post(
 );
 
 /* ===============================
+   REFRESH TOKEN
+================================ */
+
+router.post('/refresh', async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(401).json({ message: 'Refresh token required' });
+    }
+
+    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+    const user = await User.findById(decoded.userId);
+
+    if (!user || user.refreshToken !== refreshToken) {
+      return res.status(401).json({ message: 'Invalid refresh token' });
+    }
+
+    // Generate new tokens
+    const tokens = generateTokens(user._id);
+    
+    // Update refresh token
+    user.refreshToken = tokens.refreshToken;
+    await user.save();
+
+    res.json(tokens);
+  } catch (error) {
+    res.status(401).json({ message: 'Invalid refresh token' });
+  }
+});
+
+
+/* ===============================
    CURRENT USER
 ================================ */
 // Get current user
