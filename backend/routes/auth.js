@@ -205,22 +205,34 @@ router.post('/logout', auth, async (req, res) => {
    DELETE BY PROFILE ID
 ================================ */
 router.delete(
-  '/delete-by-profileId',
-  [body('profileId').isNumeric().withMessage('profileId must be numeric')],
+  '/delete-by-email',
+  [body('email').isEmail().withMessage('Valid email is required')],
   async (req, res) => {
     try {
       const errors = validationResult(req);
-      if (!errors.isEmpty()) return validationError(res, errors.array());
+      if (!errors.isEmpty()) {
+        return validationError(res, errors.array());
+      }
 
-      const user = await User.findOneAndDelete({ profileId: req.body.profileId });
-      if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+      const user = await User.findOneAndDelete({ email: req.body.email });
 
-      res.json({ success: true, message: 'User deleted successfully' });
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found'
+        });
+      }
+
+      res.json({
+        success: true,
+        message: 'User deleted successfully'
+      });
     } catch (err) {
       console.error('DELETE ERROR:', err);
       serverError(res, 'User deletion failed');
     }
   }
 );
+
 
 module.exports = router;

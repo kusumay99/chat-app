@@ -204,12 +204,12 @@ router.post('/conversations', auth, async (req, res) => {
 ====================================================== */
 router.put('/mark-read', auth, async (req, res) => {
   try {
-    const { userId } = req.body;
-    if (!userId) return res.status(400).json({ success: false, message: 'userId required' });
+    const { conversationUserId } = req.body;
+    if (!conversationUserId) return res.status(400).json({ success: false, message: 'conversationUserId required' });
 
     await Message.updateMany(
       {
-        sender: userId,
+        sender: conversationUserId,
         receiver: req.user._id,
         status: { $in: ['sent', 'delivered'] }
       },
