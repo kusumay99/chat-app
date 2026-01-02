@@ -202,7 +202,7 @@ router.post('/logout', auth, async (req, res) => {
 });
 
 /* ===============================
-   DELETE BY PROFILE ID
+   DELETE BY email
 ================================ */
 router.delete(
   '/delete-by-email',
