@@ -8,6 +8,12 @@ const postSchema = new mongoose.Schema(
       maxlength: 100,
       default: ''
     },
+    postId: {
+      type: Number,
+      unique: true,
+      required: true, // ✅ IMPORTANT
+      index: true     // ✅ faster queries
+    },
 
     content: {
       type: String,

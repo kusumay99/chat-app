@@ -16,32 +16,18 @@ const messageSchema = new mongoose.Schema(
 
     messageType: {
       type: String,
-      enum: ['text', 'image', 'document', 'audio', 'video'],
+      enum: ['text', 'image', 'document'],
       default: 'text',
     },
 
     text: {
       type: String,
-      required: function () {
-        return this.messageType === 'text';
-      },
-      trim: true,
-    },
-
-    fileUrl: {
-      type: String,
       default: null,
     },
 
-    fileName: {
-      type: String,
-      default: null,
-    },
-
-    fileSize: {
-      type: Number,
-      default: null,
-    },
+    fileUrl: String,
+    fileName: String,
+    fileSize: Number,
 
     status: {
       type: String,
@@ -49,14 +35,12 @@ const messageSchema = new mongoose.Schema(
       default: 'sent',
     },
 
-    deliveredAt: {
-      type: Date,
-      default: null,
-    },
+    deliveredAt: Date,
+    readAt: Date,
 
-    readAt: {
-      type: Date,
-      default: null,
+    isEdited: {
+      type: Boolean,
+      default: false,
     },
 
     isDeleted: {
@@ -64,20 +48,9 @@ const messageSchema = new mongoose.Schema(
       default: false,
     },
 
-    deletedAt: {
-      type: Date,
-      default: null,
-    },
+    deletedAt: Date,
   },
-  {
-    timestamps: true,
-  }
+  { timestamps: true }
 );
-
-/* ===========================
-   Indexes (Performance)
-=========================== */
-messageSchema.index({ sender: 1, receiver: 1, createdAt: -1 });
-messageSchema.index({ receiver: 1, status: 1 });
 
 module.exports = mongoose.model('Message', messageSchema);

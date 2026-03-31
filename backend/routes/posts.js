@@ -1,260 +1,349 @@
 const express = require('express');
-const router = express.Router();
+const mongoose = require('mongoose');
+
 const Post = require('../models/Post');
+const User = require('../models/User');
+const Counter = require('../models/Counter');
 const auth = require('../middleware/auth');
+
+const router = express.Router();
 
 /* ======================================================
    HELPERS
 ====================================================== */
-const errorResponse = (res, message, code = 400) =>
-  res.status(code).json({ success: false, message });
+const isValidNumber = (val) => typeof val === 'number' && !isNaN(val);
+
+const sendError = (res, status, message) =>
+  res.status(status).json({ success: false, message });
+
+const sendSuccess = (res, data, status = 200) =>
+  res.status(status).json({ success: true, ...data });
+
+/* ======================================================
+   SEQUENTIAL POST ID
+====================================================== */
+const getNextPostId = async () => {
+  const counter = await Counter.findOneAndUpdate(
+    { name: 'postId' },
+    { $inc: { value: 1 } },
+    { new: true, upsert: true }
+  );
+  return counter.value;
+};
+
+/* ======================================================
+   CREATE POST
+====================================================== */
+router.post('/create', auth, async (req, res) => {
+  try {
+    const { title, description, content } = req.body;
+
+    if (!content || !content.trim()) {
+      return sendError(res, 400, 'Content is required');
+    }
+
+    const postId = await getNextPostId();
+
+    const post = await Post.create({
+      postId,
+      title: title?.trim() || '',
+      description: description?.trim() || '',
+      content: content.trim(),
+      author: req.user._id,
+      status: 'active',
+    });
+
+    await post.populate('author', 'username avatar');
+
+    return sendSuccess(res, { post }, 201);
+  } catch (err) {
+    console.error('CREATE POST ERROR:', err);
+    return sendError(res, 500, 'Failed to create post');
+  }
+});
 
 /* ======================================================
    GET ALL POSTS
-   body: { page, limit }
 ====================================================== */
 router.post('/list', auth, async (req, res) => {
   try {
-    const page = Number(req.body.page) || 1;
-    const limit = Number(req.body.limit) || 10;
-    const skip = (page - 1) * limit;
+    const page = Math.max(1, Number(req.body.page) || 1);
+    const limit = Math.min(50, Number(req.body.limit) || 10);
 
-    const [posts, total] = await Promise.all([
-      Post.find({ status: 'active' })
-        .populate('author', 'username avatar')
-        .populate('likes.user', 'username')
-        .populate('comments.user', 'username avatar')
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit),
-      Post.countDocuments({ status: 'active' })
-    ]);
+    const posts = await Post.find({ status: 'active' })
+      .populate('author', 'username avatar')
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean();
 
-    res.json({
-      success: true,
+    const total = await Post.countDocuments({ status: 'active' });
+
+    return sendSuccess(res, {
       posts,
       pagination: {
         page,
         limit,
         total,
         totalPages: Math.ceil(total / limit),
-        hasNext: page * limit < total,
-        hasPrev: page > 1
-      }
+      },
     });
   } catch (err) {
-    console.error('Get posts error:', err);
-    errorResponse(res, 'Failed to fetch posts', 500);
+    console.error('LIST ERROR:', err);
+    return sendError(res, 500, 'Failed to fetch posts');
   }
 });
 
 /* ======================================================
-   GET MY POSTS
-   body: {}
+   GET SINGLE POST (BY postId)
 ====================================================== */
-router.post('/my-posts', auth, async (req, res) => {
+router.post('/get-one', auth, async (req, res) => {
   try {
-    const posts = await Post.find({
-      author: req.user.id,
-      status: 'active'
-    })
-      .populate('author', 'username avatar')
-      .populate('likes.user', 'username')
-      .populate('comments.user', 'username avatar')
-      .sort({ createdAt: -1 });
+    const { postId } = req.body;
 
-    res.json({ success: true, posts });
-  } catch (err) {
-    console.error(err);
-    errorResponse(res, 'Failed to fetch user posts', 500);
-  }
-});
-
-/* ======================================================
-   CREATE POST
-   body: { title, description, content }
-====================================================== */
-router.post('/create', auth, async (req, res) => {
-  try {
-    const { title, description, content } = req.body;
-    const finalContent = content || description;
-
-    if (!finalContent || !finalContent.trim()) {
-      return errorResponse(res, 'Post content is required');
+    if (!isValidNumber(postId)) {
+      return sendError(res, 400, 'Invalid postId');
     }
 
-    const post = await Post.create({
-      title: title?.trim(),
-      description: description?.trim(),
-      content: finalContent.trim(),
-      author: req.user.id
-    });
+    const post = await Post.findOne({ postId, status: 'active' })
+      .populate('author', 'username avatar')
+      .lean();
 
-    await post.populate('author', 'username avatar');
+    if (!post) return sendError(res, 404, 'Post not found');
 
-    res.status(201).json({ success: true, post });
+    return sendSuccess(res, { post });
   } catch (err) {
-    console.error(err);
-    errorResponse(res, 'Failed to create post', 500);
+    console.error('GET ONE ERROR:', err);
+    return sendError(res, 500, 'Failed to fetch post');
   }
 });
 
 /* ======================================================
    UPDATE POST
-   body: { postId, title, description, content }
 ====================================================== */
 router.put('/update', auth, async (req, res) => {
   try {
     const { postId, title, description, content } = req.body;
 
-    if (!postId) return errorResponse(res, 'postId is required');
-
-    const post = await Post.findById(postId);
-    if (!post) return errorResponse(res, 'Post not found', 404);
-
-    if (post.author.toString() !== req.user.id) {
-      return errorResponse(res, 'Not authorized', 403);
+    if (!isValidNumber(postId)) {
+      return sendError(res, 400, 'Invalid postId');
     }
 
-    if (content?.trim()) post.content = content.trim();
-    else if (description?.trim()) post.content = description.trim();
+    const post = await Post.findOne({ postId });
 
-    if (title !== undefined) post.title = title?.trim();
-    if (description?.trim()) post.description = description.trim();
+    if (!post || post.status !== 'active') {
+      return sendError(res, 404, 'Post not found');
+    }
+
+    if (post.author.toString() !== req.user._id.toString()) {
+      return sendError(res, 403, 'Not authorized');
+    }
+
+    if (title !== undefined) post.title = title.trim();
+    if (description !== undefined) post.description = description.trim();
+    if (content?.trim()) post.content = content.trim();
 
     await post.save();
     await post.populate('author', 'username avatar');
 
-    res.json({ success: true, post });
+    return sendSuccess(res, { post });
   } catch (err) {
-    console.error(err);
-    errorResponse(res, 'Failed to update post', 500);
+    console.error('UPDATE ERROR:', err);
+    return sendError(res, 500, 'Update failed');
   }
 });
 
 /* ======================================================
    DELETE POST (SOFT DELETE)
-   body: { postId }
 ====================================================== */
 router.put('/delete', auth, async (req, res) => {
   try {
     const { postId } = req.body;
 
-    if (!postId) return errorResponse(res, 'postId is required');
+    if (!isValidNumber(postId)) {
+      return sendError(res, 400, 'Invalid postId');
+    }
 
-    const post = await Post.findById(postId);
-    if (!post) return errorResponse(res, 'Post not found', 404);
+    const post = await Post.findOne({ postId });
 
-    if (post.author.toString() !== req.user.id) {
-      return errorResponse(res, 'Not authorized', 403);
+    if (!post) return sendError(res, 404, 'Post not found');
+
+    if (post.author.toString() !== req.user._id.toString()) {
+      return sendError(res, 403, 'Not authorized');
     }
 
     post.status = 'deleted';
     await post.save();
 
-    res.json({ success: true, message: 'Post deleted successfully' });
+    return sendSuccess(res, { message: 'Post deleted successfully' });
   } catch (err) {
-    console.error(err);
-    errorResponse(res, 'Failed to delete post', 500);
+    console.error('DELETE ERROR:', err);
+    return sendError(res, 500, 'Delete failed');
   }
 });
 
 /* ======================================================
-   LIKE / UNLIKE POST
-   body: { postId }
+   LIKE / UNLIKE
 ====================================================== */
 router.post('/like', auth, async (req, res) => {
   try {
     const { postId } = req.body;
-    if (!postId) return errorResponse(res, 'postId is required');
 
-    const post = await Post.findById(postId);
-    if (!post) return errorResponse(res, 'Post not found', 404);
+    if (!isValidNumber(postId)) {
+      return sendError(res, 400, 'Invalid postId');
+    }
 
-    const liked = post.likes.some(
-      like => like.user.toString() === req.user.id
+    const post = await Post.findOne({ postId });
+    if (!post) return sendError(res, 404, 'Post not found');
+
+    const userId = req.user._id;
+
+    const alreadyLiked = post.likes.some(
+      (l) => l.user.toString() === userId.toString()
     );
 
-    post.likes = liked
-      ? post.likes.filter(like => like.user.toString() !== req.user.id)
-      : [...post.likes, { user: req.user.id }];
+    if (alreadyLiked) {
+      post.likes = post.likes.filter(
+        (l) => l.user.toString() !== userId.toString()
+      );
+    } else {
+      post.likes.push({ user: userId });
+    }
 
     await post.save();
-    await post.populate('likes.user', 'username');
 
-    res.json({
-      success: true,
-      action: liked ? 'unliked' : 'liked',
+    return sendSuccess(res, {
+      action: alreadyLiked ? 'unliked' : 'liked',
       likesCount: post.likes.length,
-      likes: post.likes
     });
   } catch (err) {
-    console.error(err);
-    errorResponse(res, 'Failed to like post', 500);
+    console.error('LIKE ERROR:', err);
+    return sendError(res, 500, 'Like failed');
   }
 });
 
 /* ======================================================
    ADD COMMENT
-   body: { postId, text }
 ====================================================== */
 router.post('/comment', auth, async (req, res) => {
   try {
     const { postId, text } = req.body;
 
-    if (!postId) return errorResponse(res, 'postId required');
-    if (!text?.trim()) return errorResponse(res, 'Comment text required');
+    if (!isValidNumber(postId)) {
+      return sendError(res, 400, 'Invalid postId');
+    }
 
-    const post = await Post.findById(postId);
-    if (!post) return errorResponse(res, 'Post not found', 404);
+    if (!text?.trim()) {
+      return sendError(res, 400, 'Comment text required');
+    }
+
+    const post = await Post.findOne({ postId });
+    if (!post) return sendError(res, 404, 'Post not found');
 
     post.comments.push({
-      user: req.user.id,
-      text: text.trim()
+      user: req.user._id,
+      text: text.trim(),
     });
 
     await post.save();
-    await post.populate('comments.user', 'username avatar');
 
-    res.json({ success: true, comments: post.comments });
+    return sendSuccess(res, { comments: post.comments });
   } catch (err) {
-    console.error(err);
-    errorResponse(res, 'Failed to add comment', 500);
+    console.error('COMMENT ERROR:', err);
+    return sendError(res, 500, 'Comment failed');
   }
 });
 
 /* ======================================================
    DELETE COMMENT
-   body: { postId, commentId }
 ====================================================== */
 router.put('/delete-comment', auth, async (req, res) => {
   try {
     const { postId, commentId } = req.body;
 
-    if (!postId || !commentId) {
-      return errorResponse(res, 'postId and commentId required');
+    if (!isValidNumber(postId) || !mongoose.Types.ObjectId.isValid(commentId)) {
+      return sendError(res, 400, 'Invalid IDs');
     }
 
-    const post = await Post.findById(postId);
-    if (!post) return errorResponse(res, 'Post not found', 404);
+    const post = await Post.findOne({ postId });
+    if (!post) return sendError(res, 404, 'Post not found');
 
     const comment = post.comments.id(commentId);
-    if (!comment) return errorResponse(res, 'Comment not found', 404);
+    if (!comment) return sendError(res, 404, 'Comment not found');
 
     if (
-      comment.user.toString() !== req.user.id &&
-      post.author.toString() !== req.user.id
+      comment.user.toString() !== req.user._id.toString() &&
+      post.author.toString() !== req.user._id.toString()
     ) {
-      return errorResponse(res, 'Not authorized', 403);
+      return sendError(res, 403, 'Not authorized');
     }
 
-    post.comments.pull(commentId);
+    comment.deleteOne();
     await post.save();
 
-    res.json({ success: true, message: 'Comment deleted' });
+    return sendSuccess(res, { message: 'Comment deleted' });
   } catch (err) {
-    console.error(err);
-    errorResponse(res, 'Failed to delete comment', 500);
+    console.error('DELETE COMMENT ERROR:', err);
+    return sendError(res, 500, 'Delete comment failed');
+  }
+});
+
+/* ======================================================
+   SAVE / UNSAVE POST
+====================================================== */
+router.post('/save', auth, async (req, res) => {
+  try {
+    const { postId } = req.body;
+
+    if (!isValidNumber(postId)) {
+      return sendError(res, 400, 'Invalid postId');
+    }
+
+    const user = await User.findById(req.user._id);
+
+    if (!user.savedPosts) user.savedPosts = [];
+
+    const exists = user.savedPosts.some(
+      (id) => id.toString() === postId.toString()
+    );
+
+    if (exists) {
+      user.savedPosts = user.savedPosts.filter(
+        (id) => id.toString() !== postId.toString()
+      );
+    } else {
+      user.savedPosts.push(postId);
+    }
+
+    await user.save();
+
+    return sendSuccess(res, {
+      action: exists ? 'unsaved' : 'saved',
+    });
+  } catch (err) {
+    console.error('SAVE ERROR:', err);
+    return sendError(res, 500, 'Save failed');
+  }
+});
+
+/* ======================================================
+   SEARCH POSTS
+====================================================== */
+router.post('/search', auth, async (req, res) => {
+  try {
+    const { query } = req.body;
+
+    const posts = await Post.find({
+      content: { $regex: query || '', $options: 'i' },
+      status: 'active',
+    })
+      .limit(20)
+      .populate('author', 'username avatar');
+
+    return sendSuccess(res, { posts });
+  } catch (err) {
+    console.error('SEARCH ERROR:', err);
+    return sendError(res, 500, 'Search failed');
   }
 });
 
