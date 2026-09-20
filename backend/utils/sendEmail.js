@@ -1,8 +1,8 @@
-const transporter = require("../config/mailer");
+import { sendMail } from "../config/mailer";
 
 const sendEmail = async (to, subject, html) => {
   try {
-    const info = await transporter.sendMail({
+    const info = await sendMail({
       from: `"Ayrene App" <${process.env.EMAIL_USER}>`,
       to,
       subject,
@@ -16,4 +16,4 @@ const sendEmail = async (to, subject, html) => {
   }
 };
 
-module.exports = sendEmail;
+export default sendEmail;
