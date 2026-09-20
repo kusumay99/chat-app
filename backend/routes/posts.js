@@ -36,29 +36,81 @@ const getNextPostId = async () => {
 ====================================================== */
 router.post('/create', auth, async (req, res) => {
   try {
-    const { title, description, content } = req.body;
+    let { title, description, content } = req.body;
 
-    if (!content || !content.trim()) {
-      return sendError(res, 400, 'Content is required');
+    // ---------------------------
+    // SANITIZE INPUT
+    // ---------------------------
+    title = typeof title === 'string' ? title.trim() : '';
+    description = typeof description === 'string' ? description.trim() : '';
+    content = typeof content === 'string' ? content.trim() : '';
+
+    // ---------------------------
+    // FALLBACK CONTENT
+    // ---------------------------
+    if (!content) {
+      content = description;
     }
 
+    // ---------------------------
+    // VALIDATION
+    // ---------------------------
+    if (!title || title.length < 3) {
+      return res.status(400).json({
+        success: false,
+        message: 'Title must be at least 3 characters',
+      });
+    }
+
+    if (!content || content.length < 10) {
+      return res.status(400).json({
+        success: false,
+        message: 'Content must be at least 10 characters',
+      });
+    }
+
+    // ---------------------------
+    // CREATE POST ID
+    // ---------------------------
     const postId = await getNextPostId();
 
-    const post = await Post.create({
+    // ---------------------------
+    // CREATE POST IN DB
+    // ---------------------------
+    const newPost = await Post.create({
       postId,
-      title: title?.trim() || '',
-      description: description?.trim() || '',
-      content: content.trim(),
+      title,
+      description,
+      content,
       author: req.user._id,
       status: 'active',
     });
 
-    await post.populate('author', 'username avatar');
+    // ---------------------------
+    // POPULATE AUTHOR
+    // ---------------------------
+    const post = await Post.findById(newPost._id)
+      .populate('author', 'username avatar')
+      .lean();
 
-    return sendSuccess(res, { post }, 201);
+    // ---------------------------
+    // SUCCESS RESPONSE
+    // ---------------------------
+    return res.status(201).json({
+      success: true,
+      message: 'Post created successfully',
+      data: {
+        post,
+      },
+    });
+
   } catch (err) {
-    console.error('CREATE POST ERROR:', err);
-    return sendError(res, 500, 'Failed to create post');
+    console.error('❌ CREATE POST ERROR:', err);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to create post',
+    });
   }
 });
 

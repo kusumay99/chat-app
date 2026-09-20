@@ -1,25 +1,20 @@
-const express = require('express');
-const multer = require('multer');
-const fs = require('fs');
-const mongoose = require('mongoose');
+const express = require("express");
+const multer = require("multer");
+const fs = require("fs");
+const mongoose = require("mongoose");
 
-const Message = require('../models/Message');
-const Conversation = require('../models/Conversation');
-const User = require('../models/User');
-const auth = require('../middleware/auth');
+const Message = require("../models/Message");
+const Conversation = require("../models/Conversation");
+const User = require("../models/User");
+const auth = require("../middleware/auth");
 
 const router = express.Router();
 
-/* ======================================================
-   HELPERS
-====================================================== */
+/* ================= HELPERS ================= */
 const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
 
-/* ======================================================
-   UPLOAD SETUP
-====================================================== */
-const uploadDir = 'uploads/files';
-
+/* ================= UPLOAD ================= */
+const uploadDir = "uploads/files";
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
@@ -27,56 +22,70 @@ if (!fs.existsSync(uploadDir)) {
 const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, uploadDir),
   filename: (_, file, cb) => {
-    const unique = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    const unique = Date.now() + "-" + Math.random();
     cb(null, `${unique}-${file.originalname}`);
   },
 });
 
-const upload = multer({
-  storage,
-  limits: { fileSize: 50 * 1024 * 1024 },
-});
+const upload = multer({ storage });
 
 /* ======================================================
-   SEND MESSAGE (TEXT / IMAGE / FILE)
+   SEND MESSAGE
 ====================================================== */
-router.post('/send', auth, upload.single('file'), async (req, res) => {
+router.post("/send", auth, upload.single("file"), async (req, res) => {
   try {
     const { receiverId, text } = req.body;
     const file = req.file;
 
+    console.log("📤 SEND MESSAGE:", {
+      from: req.user._id,
+      to: receiverId,
+      text,
+    });
+
+    // ✅ VALIDATION
     if (!receiverId || !isValidId(receiverId)) {
-      return res.status(400).json({ success: false, message: 'Valid receiverId required' });
+      return res.status(400).json({
+        success: false,
+        message: "Invalid receiverId",
+      });
     }
 
     if (!text && !file) {
-      return res.status(400).json({ success: false, message: 'Message text or file required' });
+      return res.status(400).json({
+        success: false,
+        message: "Message required",
+      });
     }
 
     const receiver = await User.findById(receiverId);
     if (!receiver) {
-      return res.status(404).json({ success: false, message: 'Receiver not found' });
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
     }
 
-    /* MESSAGE TYPE LOGIC */
-    let messageType = 'text';
+    // ✅ DETECT TYPE
+    let messageType = "text";
     if (file) {
-      if (file.mimetype.startsWith('image/')) messageType = 'image';
-      else messageType = 'file';
+      messageType = file.mimetype.startsWith("image/")
+        ? "image"
+        : "document";
     }
 
+    // ✅ CREATE MESSAGE
     const message = await Message.create({
       sender: req.user._id,
       receiver: receiverId,
-      text: text?.trim() || null,
+      text: text || null,
       messageType,
-      fileUrl: file ? file.path : null,
-      fileName: file ? file.originalname : null,
-      fileSize: file ? file.size : null,
-      status: 'sent',
+      fileUrl: file?.path || null,
+      fileName: file?.originalname || null,
+      fileSize: file?.size || null,
     });
 
-    /* CONVERSATION */
+    // ✅ FIND OR CREATE CONVERSATION
     let conversation = await Conversation.findOne({
       participants: { $all: [req.user._id, receiverId] },
     });
@@ -84,40 +93,62 @@ router.post('/send', auth, upload.single('file'), async (req, res) => {
     if (!conversation) {
       conversation = new Conversation({
         participants: [req.user._id, receiverId],
-        unreadCount: {},
+        unreadCount: new Map(),
       });
     }
 
-    const unread = conversation.unreadCount?.[receiverId] || 0;
-    conversation.unreadCount = {
-      ...conversation.unreadCount,
-      [receiverId]: unread + 1,
-    };
+    // ✅ FIX: Ensure Map exists
+    if (!conversation.unreadCount) {
+      conversation.unreadCount = new Map();
+    }
+
+    const currentUnread =
+      conversation.unreadCount.get(receiverId.toString()) || 0;
+
+    conversation.unreadCount.set(
+      receiverId.toString(),
+      currentUnread + 1
+    );
 
     conversation.lastMessage = message._id;
     conversation.lastMessageAt = message.createdAt;
 
     await conversation.save();
 
-    res.status(201).json({ success: true, message });
-
+    return res.json({
+      success: true,
+      message,
+    });
   } catch (err) {
-    console.error('SEND MESSAGE ERROR:', err);
-    res.status(500).json({ success: false, message: 'Server error' });
+    console.error("🔥 SEND ERROR:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
   }
 });
 
 /* ======================================================
-   GET MESSAGES (BODY ONLY)
+   GET MESSAGES
 ====================================================== */
-router.post('/get-messages', auth, async (req, res) => {
+router.post("/get-messages", auth, async (req, res) => {
   try {
-    const { userId, page = 1, limit = 50 } = req.body;
+    const { userId } = req.body;
 
+    console.log("📩 GET MESSAGES:", {
+      from: req.user._id,
+      to: userId,
+    });
+
+    // ✅ VALIDATION
     if (!userId || !isValidId(userId)) {
-      return res.status(400).json({ success: false, message: 'Valid userId required' });
+      return res.status(400).json({
+        success: false,
+        message: "Invalid userId",
+      });
     }
 
+    // ✅ FIND OR CREATE CONVERSATION
     let conversation = await Conversation.findOne({
       participants: { $all: [req.user._id, userId] },
     });
@@ -125,66 +156,76 @@ router.post('/get-messages', auth, async (req, res) => {
     if (!conversation) {
       conversation = await Conversation.create({
         participants: [req.user._id, userId],
-        unreadCount: {},
+        unreadCount: new Map(),
       });
     }
 
+    // ✅ GET MESSAGES
     const messages = await Message.find({
       $or: [
         { sender: req.user._id, receiver: userId },
         { sender: userId, receiver: req.user._id },
       ],
     })
-      .populate('sender', 'username avatar')
-      .populate('receiver', 'username avatar')
-      .sort({ createdAt: 1 })
-      .skip((page - 1) * limit)
-      .limit(Number(limit));
+      .populate("sender", "username avatar")
+      .populate("receiver", "username avatar")
+      .sort({ createdAt: 1 });
 
-    /* UPDATE DELIVERY STATUS */
+    // ✅ MARK DELIVERED
     await Message.updateMany(
       {
         sender: userId,
         receiver: req.user._id,
-        status: 'sent',
+        status: "sent",
       },
       {
-        status: 'delivered',
+        status: "delivered",
         deliveredAt: new Date(),
       }
     );
 
-    res.json({
+    return res.json({
       success: true,
-      conversationId: conversation._id,
       messages,
     });
-
   } catch (err) {
-    console.error('GET MESSAGES ERROR:', err);
-    res.status(500).json({ success: false, message: 'Server error' });
+    console.error("🔥 GET ERROR:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
   }
 });
 
 /* ======================================================
    MARK AS READ
 ====================================================== */
-router.post('/mark-read', auth, async (req, res) => {
+router.post("/mark-read", auth, async (req, res) => {
   try {
     const { userId } = req.body;
 
+    console.log("👁️ MARK READ:", {
+      reader: req.user._id,
+      sender: userId,
+    });
+
+    // ✅ VALIDATION
     if (!userId || !isValidId(userId)) {
-      return res.status(400).json({ success: false, message: 'Valid userId required' });
+      return res.status(400).json({
+        success: false,
+        message: "Invalid userId",
+      });
     }
 
+    // ✅ UPDATE MESSAGES
     await Message.updateMany(
       {
         sender: userId,
         receiver: req.user._id,
-        status: { $in: ['sent', 'delivered'] },
+        status: { $in: ["sent", "delivered"] },
       },
       {
-        status: 'read',
+        status: "read",
         readAt: new Date(),
       }
     );
@@ -194,98 +235,64 @@ router.post('/mark-read', auth, async (req, res) => {
     });
 
     if (conversation) {
-      conversation.unreadCount = {
-        ...conversation.unreadCount,
-        [req.user._id]: 0,
-      };
+      if (!conversation.unreadCount) {
+        conversation.unreadCount = new Map();
+      }
+
+      conversation.unreadCount.set(req.user._id.toString(), 0);
       await conversation.save();
     }
 
-    res.json({ success: true, message: 'Marked as read' });
-
+    return res.json({
+      success: true,
+    });
   } catch (err) {
-    console.error('READ ERROR:', err);
-    res.status(500).json({ success: false });
+    console.error("🔥 READ ERROR:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
   }
 });
 
 /* ======================================================
-   EDIT MESSAGE (BODY ONLY)
+   GET CONVERSATIONS
 ====================================================== */
-router.post('/edit-message', auth, async (req, res) => {
-  try {
-    const { messageId, text } = req.body;
-
-    if (!isValidId(messageId)) {
-      return res.status(400).json({ success: false, message: 'Invalid messageId' });
-    }
-
-    const message = await Message.findById(messageId);
-
-    if (!message || message.sender.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ success: false, message: 'Not allowed' });
-    }
-
-    message.text = text?.trim() || message.text;
-    message.edited = true;
-
-    await message.save();
-
-    res.json({ success: true, message });
-
-  } catch (err) {
-    console.error('EDIT ERROR:', err);
-    res.status(500).json({ success: false });
-  }
-});
-
-/* ======================================================
-   DELETE MESSAGE (SOFT DELETE)
-====================================================== */
-router.post('/delete-message', auth, async (req, res) => {
-  try {
-    const { messageId } = req.body;
-
-    if (!isValidId(messageId)) {
-      return res.status(400).json({ success: false, message: 'Invalid messageId' });
-    }
-
-    const message = await Message.findById(messageId);
-
-    if (!message || message.sender.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ success: false, message: 'Not allowed' });
-    }
-
-    message.isDeleted = true;
-    message.deletedAt = new Date();
-
-    await message.save();
-
-    res.json({ success: true, message: 'Deleted' });
-
-  } catch (err) {
-    console.error('DELETE ERROR:', err);
-    res.status(500).json({ success: false });
-  }
-});
-
-/* ======================================================
-   GET CONVERSATIONS (BODY ONLY)
-====================================================== */
-router.post('/get-conversations', auth, async (req, res) => {
+router.post("/get-conversations", auth, async (req, res) => {
   try {
     const conversations = await Conversation.find({
       participants: req.user._id,
     })
-      .populate('participants', 'username avatar onlineStatus lastSeen')
-      .populate('lastMessage')
+      .populate("participants", "username avatar")
+      .populate("lastMessage")
       .sort({ lastMessageAt: -1 });
 
-    res.json({ success: true, conversations });
+    const formatted = conversations.map((conv) => {
+      const otherUser = conv.participants.find(
+        (p) => p._id.toString() !== req.user._id.toString()
+      );
 
+      return {
+        _id: conv._id,
+        otherUser,
+        participants: conv.participants,
+        lastMessage: conv.lastMessage,
+        lastMessageAt: conv.lastMessageAt,
+        unreadCount:
+          conv.unreadCount?.get(req.user._id.toString()) || 0,
+      };
+    });
+
+    return res.json({
+      success: true,
+      conversations: formatted,
+    });
   } catch (err) {
-    console.error('CONVERSATION ERROR:', err);
-    res.status(500).json({ success: false });
+    console.error("🔥 CONVO ERROR:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
   }
 });
 

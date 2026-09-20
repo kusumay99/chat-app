@@ -6,28 +6,42 @@ const messageSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       required: true,
+      index: true,
     },
 
     receiver: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       required: true,
+      index: true,
     },
 
     messageType: {
       type: String,
-      enum: ['text', 'image', 'document'],
+      enum: ['text', 'image', 'file'],
       default: 'text',
     },
 
     text: {
       type: String,
+      trim: true,
       default: null,
     },
 
-    fileUrl: String,
-    fileName: String,
-    fileSize: Number,
+    fileUrl: {
+      type: String,
+      default: null,
+    },
+
+    fileName: {
+      type: String,
+      default: null,
+    },
+
+    fileSize: {
+      type: Number,
+      default: null,
+    },
 
     status: {
       type: String,
@@ -35,8 +49,15 @@ const messageSchema = new mongoose.Schema(
       default: 'sent',
     },
 
-    deliveredAt: Date,
-    readAt: Date,
+    deliveredAt: {
+      type: Date,
+      default: null,
+    },
+
+    readAt: {
+      type: Date,
+      default: null,
+    },
 
     isEdited: {
       type: Boolean,
@@ -48,9 +69,17 @@ const messageSchema = new mongoose.Schema(
       default: false,
     },
 
-    deletedAt: Date,
+    deletedAt: {
+      type: Date,
+      default: null,
+    },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+  }
 );
+
+// 🔥 COMPOUND INDEX (IMPORTANT FOR CHAT PERFORMANCE)
+messageSchema.index({ sender: 1, receiver: 1, createdAt: 1 });
 
 module.exports = mongoose.model('Message', messageSchema);

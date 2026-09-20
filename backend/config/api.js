@@ -3,7 +3,7 @@ import * as SecureStore from "expo-secure-store";
 // ----------------------------
 // CONFIG
 // ----------------------------
-export const API_BASE_URL = "http://192.168.206.192:5000/api";
+export const API_BASE_URL = "http://192.168.0.122:5000/api";
 
 // ----------------------------
 // API FETCH UTILITY

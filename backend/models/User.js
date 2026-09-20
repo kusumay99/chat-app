@@ -34,6 +34,7 @@ const userSchema = new mongoose.Schema(
 
     password: {
       type: String,
+      select: false, // Exclude password from query results by default
       default: null, // Allows OTP users without password initially
       minlength: [6, 'Password must be at least 6 characters'],
     },

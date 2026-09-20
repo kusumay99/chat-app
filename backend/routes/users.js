@@ -174,14 +174,21 @@ router.put("/update", auth, async (req, res) => {
 
     if (!user) return sendError(res, 404, "User not found");
 
+    // ✅ RETURN ALL FIELDS
     return sendSuccess(res, {
       message: "Profile updated successfully",
       user: {
         profileId: user.profileId,
         username: user.username,
         avatar: user.avatar,
+        gender: user.gender,
+        dateOfBirth: user.dateOfBirth,
+        address: user.address,
+        contactNumber: user.contactNumber,
+        email: user.email,
       },
     });
+
   } catch (err) {
     console.error("❌ UPDATE ERROR:", err);
     return sendError(res, 500, "Update failed");

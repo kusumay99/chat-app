@@ -41,6 +41,12 @@ const safeUser = (user) => ({
   profileId: user.profileId,
   username: user.username,
   email: user.email,
+  lastSeen: user.lastSeen,
+  isVerified: user.isVerified,
+  gender: user.gender || null,
+  dateOfBirth: user.dateOfBirth || null,
+  address: user.address || null,
+  contactNumber: user.contactNumber || null,
   avatar: user.avatar || null,
   onlineStatus: user.onlineStatus || 'offline',
 });
@@ -64,8 +70,44 @@ const sendOTP = async (email, otp) => {
   await transporter.sendMail({
     from: `"Ayrene ✦" <${process.env.EMAIL_USER}>`,
     to: email,
-    subject: 'Verify your email • Ayrene',
-    html: `<h2>Your OTP: ${otp}</h2><p>Valid for 10 minutes</p>`,
+    subject: "Your Ayrene verification code",
+    html: `
+      <div style="font-family: Arial, sans-serif; background:#f9fafb; padding:20px;">
+        <div style="max-width:500px; margin:auto; background:#ffffff; border-radius:10px; padding:30px; text-align:center; box-shadow:0 4px 10px rgba(0,0,0,0.05);">
+          
+          <h2 style="color:#6366f1; margin-bottom:10px;">Ayrene ✦</h2>
+          
+          <p style="font-size:16px; color:#333;">
+            Verify your email address
+          </p>
+
+          <p style="font-size:14px; color:#666;">
+            Use the OTP below to complete your signup. This code is valid for 10 minutes.
+          </p>
+
+          <div style="
+            margin: 20px 0;
+            font-size: 28px;
+            letter-spacing: 6px;
+            font-weight: bold;
+            color: #111;
+          ">
+            ${otp}
+          </div>
+
+          <p style="font-size:13px; color:#999;">
+            If you didn’t request this, you can safely ignore this email.
+          </p>
+
+          <hr style="margin:20px 0; border:none; border-top:1px solid #eee;" />
+
+          <p style="font-size:12px; color:#aaa;">
+            © ${new Date().getFullYear()} Ayrene. All rights reserved.
+          </p>
+
+        </div>
+      </div>
+    `,
   });
 };
 
@@ -82,146 +124,275 @@ const validate = (req, res) => {
 /* ===============================
    SEND OTP (NO PROFILE CREATION)
 ================================ */
+/* ===============================
+   SEND OTP
+================================ */
 router.post(
-  '/send-otp',
+  "/send-otp",
   [
-    body('email').isEmail(),
-    body('username').isLength({ min: 3 }),
+    body("email").isEmail(),
+    body("username").isLength({ min: 3 }),
   ],
   async (req, res) => {
     try {
       if (!validate(req, res)) return;
 
-      const { email, username } = req.body;
+      let { email, username } = req.body;
+
+      // ✅ Normalize
+      email = email.toLowerCase().trim();
+      username = username.trim();
 
       let user = await User.findOne({ email });
 
       const otp = generateOTP();
 
       if (!user) {
-        // TEMP USER (NOT VERIFIED)
         user = new User({
           email,
           username,
           isVerified: false,
         });
+      } else {
+        if (user.isVerified) {
+          return res.status(400).json({
+            message: "User already exists. Please login.",
+          });
+        }
+        user.password = undefined; // Clear password if exists (for safety)
       }
 
+      // ✅ Always store OTP as STRING
       user.otp = otp;
       user.otpExpires = Date.now() + 10 * 60 * 1000;
 
       await user.save();
+
       await sendOTP(email, otp);
 
-      res.json({ success: true, message: 'OTP sent' });
+      res.json({
+        success: true,
+        message: "OTP sent successfully",
+      });
     } catch (err) {
-      console.error('SEND OTP ERROR:', err);
-      res.status(500).json({ success: false, message: 'Failed to send OTP' });
+      console.error("SEND OTP ERROR:", err);
+      res.status(500).json({ message: "Failed to send OTP" });
     }
   }
 );
 
 /* ===============================
-   VERIFY OTP → CREATE PROFILE
+   VERIFY OTP
 ================================ */
 router.post(
-  '/verify-otp',
+  "/verify-otp",
   [
-    body('email').isEmail(),
-    body('otp').notEmpty(),
-    body('password').isLength({ min: 6 }),
+    body("email").isEmail(),
+    body("otp").notEmpty(),
+    body("password").isLength({ min: 6 }),
   ],
   async (req, res) => {
     try {
+      // ✅ Validate request
       if (!validate(req, res)) return;
 
-      const { email, otp, password } = req.body;
+      let { email, otp, password } = req.body;
 
-      const user = await User.findOne({ email });
+      // ✅ Normalize inputs
+      email = email.toLowerCase().trim();
+      otp = otp.toString().trim();
+      password = password.trim(); // 🔥 IMPORTANT FIX
 
-      if (!user)
-        return res.status(404).json({ message: 'User not found' });
 
-      if (user.isVerified)
-        return res.status(400).json({ message: 'Already verified' });
+      // ✅ Find user
+      const user = await User.findOne({ email }).select("+password");
 
-      if (user.otp !== otp)
-        return res.status(400).json({ message: 'Invalid OTP' });
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: "User not found",
+        });
+      }
 
-      if (user.otpExpires < Date.now())
-        return res.status(400).json({ message: 'OTP expired' });
+      if (user.isVerified) {
+        return res.status(400).json({
+          success: false,
+          message: "User already verified. Please login.",
+        });
+      }
 
-      // 🔐 HASH PASSWORD
-      const hashedPassword = await bcrypt.hash(password, 10);
+      // ✅ OTP check
+      if (!user.otp || user.otp !== otp) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid OTP",
+        });
+      }
 
-      user.password = hashedPassword;
+      // ✅ OTP expiry check
+      if (!user.otpExpires || user.otpExpires < Date.now()) {
+        return res.status(400).json({
+          success: false,
+          message: "OTP expired",
+        });
+      }
+
+      // 🔐 Hash password
+      user.password = password; // 🔥 plain password
+
+      console.log("HASHED PASSWORD:", user.password);
+
+      // 🎯 Generate profileId safely
+      const profileId = await getNextSequence("userId");
+
+      // ✅ Update user (single update)
+      user.password = password;
+      user.profileId = profileId;
       user.isVerified = true;
       user.otp = null;
       user.otpExpires = null;
 
-      // 🎯 CREATE PROFILE ID ONLY HERE
-      user.profileId = await getNextSequence('userId');
+      // ✅ Generate tokens (FIXED CONSISTENCY)
+      const accessToken = jwt.sign(
+        { userId: user._id }, // 🔥 FIXED (was id)
+        process.env.JWT_SECRET,
+        { expiresIn: "15m" }
+      );
+
+      const refreshToken = jwt.sign(
+        { userId: user._id }, // 🔥 FIXED (was id)
+        process.env.JWT_REFRESH_SECRET,
+        { expiresIn: "7d" }
+      );
+
+      user.refreshToken = refreshToken;
 
       await user.save();
 
-      res.json({
+      return res.status(200).json({
         success: true,
-        message: 'Account created successfully',
+        message: "Account created successfully",
+        accessToken,
+        refreshToken,
+        user: {
+          _id: user._id,
+          email: user.email,
+          username: user.username,
+          profileId: user.profileId,
+        },
       });
     } catch (err) {
-      console.error('VERIFY OTP ERROR:', err);
-      res.status(500).json({ message: 'OTP verification failed' });
+      console.error("VERIFY OTP ERROR:", err);
+
+      return res.status(500).json({
+        success: false,
+        message: "OTP verification failed",
+      });
     }
   }
 );
+
 
 /* ===============================
    LOGIN
 ================================ */
 router.post(
-  '/login',
+  "/login",
   [
-    body('email').isEmail(),
-    body('password').notEmpty(),
+    body("email")
+      .isEmail()
+      .withMessage("Valid email is required")
+      .normalizeEmail(),
+
+    body("password")
+      .notEmpty()
+      .withMessage("Password is required"),
   ],
   async (req, res) => {
     try {
+      // ✅ Validate request
       if (!validate(req, res)) return;
 
-      const { email, password } = req.body;
+      let { email, password } = req.body;
 
-      const user = await User.findOne({ email });
+      // 🔥 IMPORTANT FIX 1: Normalize email
+      email = email.toLowerCase().trim();
+      password = password.trim();
 
-      if (!user)
-        return res.status(401).json({ message: 'User not found' });
+      console.log("RAW PASSWORD (LOGIN):", password);
 
-      if (!user.isVerified)
-        return res.status(401).json({ message: 'Verify OTP first' });
+      // 🔥 IMPORTANT FIX 2: Include password explicitly
+      const user = await User.findOne({ email }).select("+password");
 
-      const match = await bcrypt.compare(password, user.password);
+      // DEBUG (remove later)
+      console.log("LOGIN EMAIL:", email);
+      console.log("USER FOUND:", user ? "YES" : "NO");
+      console.log("Stored password:", user.password);
 
-      if (!match)
-        return res.status(401).json({ message: 'Wrong password' });
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: "Invalid email or password", // 🔒 secure
+        });
+      }
 
-      const tokens = generateTokens(user._id);
+      // ✅ Check verification
+      if (!user.isVerified) {
+        return res.status(403).json({
+          success: false,
+          message: "Please verify OTP before login",
+        });
+      }
 
-      user.refreshToken = tokens.refreshToken;
-      user.onlineStatus = 'online';
+      // 🔥 IMPORTANT FIX 3: Handle missing password
+      if (!user.password) {
+        return res.status(400).json({
+          success: false,
+          message: "Account not properly set. Please register again",
+        });
+      }
+
+      // 🔥 IMPORTANT FIX 4: Compare password correctly
+      const isMatch = await bcrypt.compare(password, user.password);
+
+      console.log("PASSWORD MATCH:", isMatch);
+
+      if (!isMatch) {
+        return res.status(401).json({
+          success: false,
+          message: "Invalid email or password",
+        });
+      }
+
+      // ✅ Generate tokens
+      const { accessToken, refreshToken } = generateTokens(user._id);
+
+      // ✅ Update session info
+      user.refreshToken = refreshToken;
+      user.onlineStatus = "online";
       user.lastSeen = new Date();
 
       await user.save();
 
-      res.json({
+      // ✅ Send response
+      return res.status(200).json({
         success: true,
+        message: "Login successful",
         user: safeUser(user),
-        ...tokens,
+        accessToken,
+        refreshToken,
       });
     } catch (err) {
-      console.error('LOGIN ERROR:', err);
-      res.status(500).json({ message: 'Login failed' });
+      console.error("🔥 LOGIN ERROR:", err);
+
+      return res.status(500).json({
+        success: false,
+        message: "Server error. Please try again later",
+      });
     }
   }
 );
+
 
 /* ===============================
    REFRESH TOKEN
@@ -264,8 +435,21 @@ router.post('/refresh', async (req, res) => {
 /* ===============================
    CURRENT USER
 ================================ */
-router.get('/me', auth, (req, res) => {
-  res.json({ success: true, user: req.user });
+router.get("/me", auth, async (req, res) => {
+  const user = await User.findById(req.user._id);
+
+  res.json({
+    user: {
+      profileId: user.profileId,
+      username: user.username,
+      email: user.email,
+      avatar: user.avatar,
+      gender: user.gender,
+      dateOfBirth: user.dateOfBirth,
+      address: user.address,
+      contactNumber: user.contactNumber,
+    }
+  });
 });
 
 /* ===============================
