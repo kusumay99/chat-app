@@ -292,6 +292,100 @@ router.post(
   }
 );
 
+/* ===============================
+   REGISTER - SINGLE STEP
+   POST /register
+================================ */
+router.post(
+  "/register",
+  [
+    body("email")
+      .isEmail()
+      .withMessage("Valid email is required")
+      .normalizeEmail(),
+
+    body("username")
+      .trim()
+      .isLength({ min: 3 })
+      .withMessage("Username must be at least 3 characters"),
+
+    body("password")
+      .isLength({ min: 6 })
+      .withMessage("Password must be at least 6 characters"),
+  ],
+  async (req, res) => {
+    try {
+      // Validate request
+      if (!validate(req, res)) return;
+
+      let { email, username, password } = req.body;
+
+      email = email.toLowerCase().trim();
+      username = username.trim();
+      password = password.trim();
+
+      // Check existing user
+      const existingUser = await User.findOne({ email });
+
+      if (existingUser) {
+        return res.status(409).json({
+          success: false,
+          message: "User already exists. Please login.",
+        });
+      }
+
+      // Generate sequential profile ID
+      const profileId = await getNextSequence("userId");
+
+      // Hash password
+      const hashedPassword = await bcrypt.hash(password, 12);
+
+      // Create user
+      const user = new User({
+        email,
+        username,
+        password: hashedPassword,
+        profileId,
+        isVerified: true,
+        onlineStatus: "online",
+        lastSeen: new Date(),
+      });
+
+      // Generate tokens
+      const { accessToken, refreshToken } = generateTokens(user._id);
+
+      // Store refresh token
+      user.refreshToken = refreshToken;
+
+      // Save user
+      await user.save();
+
+      // Response
+      return res.status(201).json({
+        success: true,
+        message: "Registration successful",
+
+        accessToken,
+        refreshToken,
+
+        user: {
+          _id: user._id,
+          profileId: user.profileId,
+          username: user.username,
+          email: user.email,
+          isVerified: user.isVerified,
+        },
+      });
+    } catch (err) {
+      console.error("REGISTER ERROR:", err);
+
+      return res.status(500).json({
+        success: false,
+        message: "Registration failed. Please try again.",
+      });
+    }
+  }
+);
 
 /* ===============================
    LOGIN
