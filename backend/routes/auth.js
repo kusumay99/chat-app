@@ -322,7 +322,7 @@ router.post(
 
       email = email.toLowerCase().trim();
       username = username.trim();
-      password = password.trim();
+
 
       // Check existing user
       const existingUser = await User.findOne({ email });
@@ -337,14 +337,11 @@ router.post(
       // Generate sequential profile ID
       const profileId = await getNextSequence("userId");
 
-      // Hash password
-      const hashedPassword = await bcrypt.hash(password, 12);
-
       // Create user
       const user = new User({
         email,
         username,
-        password: hashedPassword,
+        password,
         profileId,
         isVerified: true,
         onlineStatus: "online",
