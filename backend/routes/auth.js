@@ -321,7 +321,6 @@ router.post(
       let { email, username, password } = req.body;
 
       email = email.toLowerCase().trim();
-      username = username.trim();
 
 
       // Check existing user
