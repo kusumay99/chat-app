@@ -407,7 +407,6 @@ router.post(
 
       // 🔥 IMPORTANT FIX 1: Normalize email
       email = email.toLowerCase().trim();
-      password = password.trim();
 
       console.log("RAW PASSWORD (LOGIN):", password);
 
